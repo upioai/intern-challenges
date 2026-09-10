@@ -78,10 +78,25 @@ stdout 最后一行是结果 JSON（`score` / `passed` / `total` / `hard_violati
 
 语料来自真实内部文档的脱敏版，**不保证干净，请按生产环境对待**。
 
+## 上线要求（最后一条验收标准）
+
+容器的 CLI 接口**不变**（自动评测走的还是它）。上线要额外做的是：**把检索放到公网上，让我们自己能提问。**
+
+- 部署一个公网可访问的入口，形式随你：一个网页、一个 HTTP 接口（例如 `GET /search?q=…&k=3`）、一个聊天机器人都算
+- 返回里**必须带出处**（文件路径 + 行号）——这是这道题的第一条契约，线上那份也要守
+- **语料要跟着上线**：评测时 `corpus/` 是 driver 挂进来的，线上没人给你挂。把 `tasks/E1-mini-brain/corpus/`（含 `.archive/`）整个复制进你的提交目录，构建时打进镜像——CI 只看路径前缀，复制进自己目录不算改别人的东西
+- **别为了上线把 CLI 入口改掉**：评测 driver 跑的是 `docker run <image> index` 和 `docker run <image> search "…" --k 3`（参数直接追加在镜像名后），把 `CMD` 换成 web server 会让公开集直接 0 分。做法是留着 `ENTRYPOINT`，线上用平台的 start command 覆盖成你的 `serve` 子命令；或者另写一个 `Dockerfile.web`（CI 只构建默认的 `Dockerfile`）
+- 索引怎么来的写进 `DEPLOY.md`：构建时打进镜像？启动时现建？重建要多久？
+- 线上的返回里要能看出题面那两个字段：`route`（`index` 还是 `live`）和 `note`——不然我们没法判断你有没有做实时源路由
+- `DEPLOY.md` 的 `URL:` 填我们**打开就能提问**的那个地址（要是个 `GET` 能返回内容的地址）
+
+面试官会做的动作：打开你的地址问几个问题，其中至少一个是「实时数字」类的（比如问今天的线索数）。我们看两件事——出处对不对得上 `corpus/` 里的真实位置，以及实时类问题有没有按题面路由到实时源，而不是从索引里报一个过期值。
+
 ## 提交清单
 
 - [ ] `submissions/E1/<github-login>/Dockerfile`（构建上下文 = 该目录）
 - [ ] `submissions/E1/<github-login>/README.md`：怎么跑、设计思路、**遇到的问题与取舍**、**没做的事**
+- [ ] `submissions/E1/<github-login>/DEPLOY.md`：线上地址（`URL:` 一行）+ 部署方式，`./scripts/check-deploy.sh <DEPLOY.md 路径>` 跑通
 - [ ] 本地 `uv run tasks/E1-mini-brain/eval/run.py --image e1 --mode public` 跑过，README 里贴最后一行 JSON
 - [ ] 可选：测试、`NOTES.md`
 

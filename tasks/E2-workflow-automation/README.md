@@ -159,10 +159,37 @@ driver 流程：起 mock → 起你的容器 → 等 `/healthz` ≤60s → 按 s
   调试也用它，比猜有用
 - 允许并鼓励用 AI 工具；但走读时要能解释每个决定
 
+## 上线要求（最后一条验收标准）
+
+这道题的上线要求是**把整条链路搬上去**，不只是你自己那个服务：
+
+- 你的服务部署到公网
+- **mock 渲染服务（`mock/mock.py`）也部署一份**——它在这道题里扮演的就是「外部依赖」。你的服务通过 `RENDER_API_URL` / `NOTIFY_URL` 指到线上那份，**继续读 env，别写死**
+- `GET /healthz` 线上也要能访问
+- CI 只允许你改 `submissions/E2/<login>/` 这一个目录，所以要部署 mock，就**把 `mock/mock.py` 和一份 scenario 复制进你的目录**（比如再写一个 `Dockerfile.mock`），别改仓里 `tasks/` 下的原件。复制进自己目录不会触发任何校验：CI 的目录白名单只看路径前缀，`docker build` 也只吃默认的 `Dockerfile`
+- mock 的启动命令要自己补全：它**不读 `$PORT`**，`--scenario` 还是必填，裸起会直接退出。写成 `python mock.py --host 0.0.0.0 --port ${PORT:-8600} --scenario public.json`（依赖在 `mock.py` 顶部的 PEP-723 头里：`fastapi`、`uvicorn`；用 `uv run mock.py …` 可以让它自己装）。**线上别加 `--exit-with-parent`**，那是评测 driver 用的
+- `DEPLOY.md` 的 `URL:` 填**你的服务的 `/healthz`**——探活打的就是这一行，而按题面你的根路径返回 404 是合规的；线上 mock 的地址用另一个键名写在下面（比如 `MOCK_URL:`），只有第一条 `URL:` 会被机器读
+
+面试官会做的动作：
+
+```bash
+# 1) 打一单进去，期望 2 秒内 2xx
+curl -s -X POST https://<你的服务>/webhook/order -H 'content-type: application/json'      -d '{"order_id":"ord-live-1","scene":"living-room","image_urls":[]}'
+# 2) 几秒后看线上 mock，期望恰好一条 ord-live-1 的通知、status=succeeded
+curl -s https://<你的线上 mock>/_admin/state | jq '.notifications'
+```
+
+不在 scenario 里的 order_id 按 `normal` 处理，所以线上这一单应该几秒内就有结果。**同一个 order_id 我们会打两次**，看你的幂等在线上是不是还成立。
+
+线上的**第一单是用来唤醒实例的**，不计 2 秒——冷启动几十秒很正常。从第二单起我们才看响应时间。
+
+线上 mock 的 `_admin/*` 谁都能调，你可以给它加保护——**加了就在 `DEPLOY.md` 里写清楚我们怎么读到 `notifications`**；加保护不扣分，不写清楚、我们没法验才扣。
+
 ## 提交清单
 
 - [ ] `submissions/E2/<github-login>/Dockerfile`（构建上下文 = 该目录，`--network host` 运行）
 - [ ] `submissions/E2/<github-login>/README.md`：怎么跑、设计思路、**遇到的问题与取舍**、**没做的事**
+- [ ] `submissions/E2/<github-login>/DEPLOY.md`：你的服务与线上 mock 的地址 + 部署方式，`./scripts/check-deploy.sh <DEPLOY.md 路径>` 跑通
 - [ ] 本地 `uv run eval/run.py --image <img> --mode public` 通过，把最后一行 JSON 贴进 PR 描述
 - [ ] （可选）测试、`NOTES.md`、n8n 导出的 workflow JSON
 - [ ] 分支名 `task/E2-<github-login>`，PR 只改自己的目录

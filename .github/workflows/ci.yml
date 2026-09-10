@@ -60,9 +60,9 @@ jobs:
           if [ "$login" != "$author_lc" ]; then
             echo "::error::目录名 '${login}' 与 PR 作者 '${author_lc}' 不一致"; exit 1
           fi
-          for f in Dockerfile README.md; do
+          for f in Dockerfile README.md DEPLOY.md; do
             if [ ! -f "$dir/$f" ]; then
-              echo "::error::缺少 ${dir}/${f}"; exit 1
+              echo "::error::缺少 ${dir}/${f}（DEPLOY.md 里要有 'URL: https://…' 一行，见 CONTRIBUTING.md）"; exit 1
             fi
           done
           case "$task" in
@@ -77,6 +77,27 @@ jobs:
             echo "login=$login"
           } >> "$GITHUB_OUTPUT"
           echo "✅ ${dir} (${task})"
+
+      # 上线探活。这是最后一条验收标准，和评测分数一样是硬门槛。
+      # 排在 build 之前：它不依赖镜像，构建失败时候选人也该一次看到两个问题。
+      # 地址从提交目录的 DEPLOY.md 里读（不读 PR 描述——改描述不会重跑 CI），
+      # 解析与判定全在 scripts/check-deploy.sh 里，候选人本地跑的是同一个脚本。
+      - name: Deployment liveness
+        id: deploy
+        env:
+          DIR: ${{ steps.sub.outputs.dir }}
+        run: |
+          set +e
+          set -uo pipefail
+          if [ ! -f scripts/check-deploy.sh ]; then
+            echo "::error::探活脚本 scripts/check-deploy.sh 不在仓里——这是仓库的问题，不是你的，请在 PR 里 @ 我们"
+            echo "rc=3" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          bash scripts/check-deploy.sh "${DIR}/DEPLOY.md" 300 > deploy.out 2>&1
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          cat deploy.out
+          exit 0
 
       - uses: astral-sh/setup-uv@v6
 
@@ -107,16 +128,20 @@ jobs:
           exit 0
 
       # 只写摘要，永远不失败；判定放在下一步，红的时候候选人一眼能看到是「Verdict」。
+      # always()：构建失败时这一步也要跑，否则候选人连上线探活的结论都看不到。
       - name: Summary
+        if: always() && steps.sub.outcome == 'success'
         env:
           RC: ${{ steps.eval.outputs.rc }}
           TASK: ${{ steps.sub.outputs.task }}
           LOGIN: ${{ steps.sub.outputs.login }}
+          DEPLOY_RC: ${{ steps.deploy.outputs.rc }}
         run: |
           set -euo pipefail
           python3 - "$RC" "$TASK" "$LOGIN" <<'PY'
           import json, os, sys
           rc, task, login = sys.argv[1], sys.argv[2], sys.argv[3]
+          deploy_rc = os.environ.get("DEPLOY_RC", "")
           last = ""
           try:
               lines = [l for l in open("eval.out", encoding="utf-8").read().splitlines() if l.strip()]
@@ -125,7 +150,9 @@ jobs:
           except Exception as e:
               res = None
           out = [f"## 公开集评测 · {task} · `{login}`", ""]
-          if not res:
+          if rc == "":
+              out += ["⏭️ 公开集评测没有执行（镜像没构建出来）。看上面的 build 步骤。", ""]
+          elif not res:
               out += ["❌ 评测脚本没有输出结果 JSON（容器起不来、或脚本异常）。看上一步的 stderr。", ""]
           else:
               out += [
@@ -139,6 +166,26 @@ jobs:
                   for d in details:
                       out.append(f"| `{d.get('id','')}` | {'✅' if d.get('ok') else '❌'} | {d.get('why','')} |")
                   out.append("")
+          deploy_log = ""
+          try:
+              deploy_log = open("deploy.out", encoding="utf-8").read().strip()[-800:]
+          except Exception:
+              pass
+          if deploy_rc == "0":
+              out += ["### 上线 ✅", "", "线上地址可访问。评审期间请保持在线，我们会亲自打开用一遍。", ""]
+          elif deploy_rc == "2":
+              out += ["### 上线 ❌", "",
+                      "`DEPLOY.md` 里的上线地址缺失或不合法（必须是公网地址）。第一行写成 `URL: https://你的线上地址`。", ""]
+          elif deploy_rc == "3":
+              out += ["### 上线 ⚠️", "", "探活脚本缺失——这是仓库的问题，不是你的。", ""]
+          elif deploy_rc == "":
+              out += ["### 上线 ⏭️", "", "探活没有执行。", ""]
+          else:
+              out += ["### 上线 ❌", "",
+                      "线上地址在 5 分钟内没有返回 2xx/3xx。它必须公网可达、并在评审期间保持在线；"
+                      "免费实例冷启动没关系，但它要能自己醒。", ""]
+          if deploy_log:
+              out += ["<details><summary>探活日志</summary>", "", "```", deploy_log, "```", "", "</details>", ""]
           out.append("隐藏集评测由面试官评论 `/eval` 触发。")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
               f.write("\n".join(out) + "\n")
@@ -148,9 +195,18 @@ jobs:
       - name: Verdict
         env:
           RC: ${{ steps.eval.outputs.rc }}
+          DEPLOY_RC: ${{ steps.deploy.outputs.rc }}
         run: |
+          fail=0
           if [ "$RC" != "0" ]; then
             echo "::error::公开集评测未通过（硬违规或得分 < 0.5）。分数与逐题结果见上方 Summary。"
-            exit 1
+            fail=1
           fi
-          echo "✅ 公开集评测通过"
+          case "${DEPLOY_RC}" in
+            0) ;;
+            2) echo "::error::上线验收未通过：DEPLOY.md 里没找到合法的上线地址。第一行写成 'URL: https://你的线上地址'（裸地址、公网可达）。"; fail=1 ;;
+            3) echo "::error::探活脚本缺失，这是仓库的问题——请在 PR 里 @ 我们，别改你的提交。"; fail=1 ;;
+            *) echo "::error::上线验收未通过：线上地址探不通。这是最后一条验收标准，不通过不进人工走读。修好后推一次 commit 重跑；如果你确认它是活的，在 PR 里说一声，我们可以在 Actions 页点 Re-run。"; fail=1 ;;
+          esac
+          if [ "$fail" != "0" ]; then exit 1; fi
+          echo "✅ 公开集评测通过 + 线上地址可访问"
