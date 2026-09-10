@@ -6,7 +6,14 @@
 #
 # 判定：地址必须是公网地址，且在预算时间内返回 2xx / 3xx。
 # 退出码：0 通过 · 1 探不通 · 2 地址缺失或不合法。
+#
+# 每条判定路径在退出前都会往 stdout 打一行哨兵 `CHECK-DEPLOY-VERDICT: <rc>`。
+# CI 只在看到哨兵时才采信退出码——**没有哨兵 = 这个脚本没跑到底**（被改坏了、
+# 依赖没了、被信号打断），那是仓库的问题，不能算到候选人头上。
+# 别删这行哨兵，也别在判定路径上绕过 verdict()。
 set -uo pipefail
+
+verdict() { echo "CHECK-DEPLOY-VERDICT: $1"; exit "$1"; }
 
 arg="${1:-}"
 budget="${2:-300}"        # 最多等多少秒（默认 5 分钟，容忍免费实例冷启动）
@@ -26,7 +33,7 @@ if [[ -f "$arg" ]]; then
          | grep -m1 -iE '^[[:space:]]*([-*][[:space:]]*)?(\*\*)?[[:space:]]*url[[:space:]]*(\*\*)?[[:space:]]*(:|：)')
   if [[ -z "$line" ]]; then
     echo "❌ ${arg} 里没有 URL 行。第一行请写成：URL: https://你的线上地址" >&2
-    exit 2
+    verdict 2
   fi
   url=$(printf '%s\n' "$line" | grep -oE 'https?://[A-Za-z0-9._~:/?#@!$&*+=%-]+' | head -1)
   while [[ "$url" == *. ]]; do url="${url%.}"; done
@@ -34,7 +41,7 @@ if [[ -f "$arg" ]]; then
     echo "❌ 找到了 URL 行，但里面没有合法地址：" >&2
     echo "   ${line}" >&2
     echo "   正确写法：URL: https://你的线上地址（裸地址，别加尖括号或 markdown 链接）" >&2
-    exit 2
+    verdict 2
   fi
   echo "· 从 ${arg} 读到：${url}" >&2
 else
@@ -43,7 +50,7 @@ fi
 
 if [[ ! "$url" =~ ^https?://[^[:space:]]+$ ]]; then
   echo "❌ 地址必须以 http:// 或 https:// 开头，且不含空格：${url}" >&2
-  exit 2
+  verdict 2
 fi
 
 # ---------- 公网地址校验 ----------
@@ -68,7 +75,7 @@ else
 fi
 host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
 
-reject() { echo "❌ ${host} 不是公网地址——我们打不开它（$1）" >&2; exit 2; }
+reject() { echo "❌ ${host} 不是公网地址——我们打不开它（$1）" >&2; verdict 2; }
 
 [[ -z "$host" ]] && reject "地址里没有主机名"
 case "$host" in
@@ -107,10 +114,10 @@ while :; do
   if [[ $rc -eq 0 && "$code" =~ ^[23][0-9][0-9]$ ]]; then
     if is_private_ip "$remote_ip"; then
       echo "❌ ${url} 解析到内网地址 ${remote_ip}——我们打不开它" >&2
-      exit 2
+      verdict 2
     fi
     echo "✅ ${url} → HTTP ${code}（第 ${attempt} 次尝试，等了 $((SECONDS - start)) 秒）"
-    exit 0
+    verdict 0
   fi
   echo "· 第 ${attempt} 次：${out}" >&2
   elapsed=$((SECONDS - start))
@@ -122,4 +129,4 @@ while :; do
 done
 
 echo "❌ ${url} 在 ${budget} 秒内没有返回 2xx/3xx（试了 ${attempt} 次）——判定为未上线 / 不可用" >&2
-exit 1
+verdict 1

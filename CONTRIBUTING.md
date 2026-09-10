@@ -85,14 +85,16 @@ URL: https://你的线上地址
 ```bash
 # 需要 docker 与 uv（https://docs.astral.sh/uv/）
 ./scripts/eval-local.sh E1 <github-login>                      # 公开集评测
-./scripts/check-deploy.sh submissions/E1/<login>/DEPLOY.md     # 上线探活，CI 跑的就是这一条
+./scripts/check-deploy.sh submissions/E1/<login>/DEPLOY.md     # 上线探活，CI 跑的就是这个脚本
 ./scripts/check-deploy.sh https://你的线上地址                  # 也可以直接给地址
 ```
 
 评测脚本最后一行是一个 JSON，`score` 是公开集得分，`hard_violations` 非空说明踩了硬规则。隐藏集只在我们评论 `/eval` 之后跑，会把汇总分数评论到 PR 上。
 
-探活脚本返回 0 才算上线通过：`1` = 探不通，`2` = 地址缺失或不是公网地址。它按总时长重试，最多等 5 分钟。
+探活脚本返回 0 才算上线通过：`1` = 探不通，`2` = 地址缺失或不是公网地址。它按总时长重试，最多等 5 分钟。输出末尾那行 `CHECK-DEPLOY-VERDICT: <码>` 是打给 CI 看的，你可以忽略。
+
+⚠️ **探活的位置和你不一样**：你从自己的网络打，CI 从 GitHub 的境外 runner 打。平台限制来源地区、或域名需要备案时，可能你本地绿、CI 红——写进 `DEPLOY.md` 并在 PR 里说一声，我们会从中国大陆手动再打一次。
 
 ## 提问
 
-开 issue，选「提问」模板。请把你已经试过的写进去。
+开 issue（选「提问」模板）**或直接在你的 PR 里评论**，两种都算。请把你已经试过的写进去。

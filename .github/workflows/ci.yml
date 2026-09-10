@@ -90,11 +90,19 @@ jobs:
           set +e
           set -uo pipefail
           if [ ! -f scripts/check-deploy.sh ]; then
-            echo "::error::探活脚本 scripts/check-deploy.sh 不在仓里——这是仓库的问题，不是你的，请在 PR 里 @ 我们"
+            echo "::error::探活脚本 scripts/check-deploy.sh 不在仓里——这是仓库的问题，不是你的，请在 PR 里说一句（别改你的提交）"
             echo "rc=3" >> "$GITHUB_OUTPUT"; exit 0
           fi
           bash scripts/check-deploy.sh "${DIR}/DEPLOY.md" 300 > deploy.out 2>&1
           rc=$?
+          # 退出码不能单独用来归责：bash 对脚本语法错返 2、对 set -u 违例返 1，
+          # 正好和脚本自己的「地址不合法(2)」「探不通(1)」撞车，脚本被改坏会伪装成候选人的错。
+          # 所以只认脚本自己打的哨兵：没有哨兵、或哨兵与退出码对不上 = 它没跑到判定就死了 = 我们的问题。
+          sentinel=$(sed -n 's/^CHECK-DEPLOY-VERDICT: //p' deploy.out | head -1)
+          if [ -z "$sentinel" ] || [ "$sentinel" != "$rc" ]; then
+            echo "::error::探活脚本没跑到判定就结束了（退出码 ${rc}，哨兵 ${sentinel:-无}）——这是仓库的问题，不是你的"
+            rc=3
+          fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           cat deploy.out
           exit 0
@@ -177,7 +185,9 @@ jobs:
               out += ["### 上线 ❌", "",
                       "`DEPLOY.md` 里的上线地址缺失或不合法（必须是公网地址）。第一行写成 `URL: https://你的线上地址`。", ""]
           elif deploy_rc == "3":
-              out += ["### 上线 ⚠️", "", "探活脚本缺失——这是仓库的问题，不是你的。", ""]
+              out += ["### 上线 ⚠️", "",
+                      "探活没跑成（脚本缺失或它自己出错）——**这是仓库的问题，不是你的**。"
+                      "在 PR 里说一句，别改你的提交；我们修好后会重开一次你的 PR 让 CI 重跑，这段时间不计入你的 48 小时。", ""]
           elif deploy_rc == "":
               out += ["### 上线 ⏭️", "", "探活没有执行。", ""]
           else:
@@ -204,8 +214,9 @@ jobs:
           fi
           case "${DEPLOY_RC}" in
             0) ;;
+            "") echo "::error::探活这一步没有产出结论——这是仓库的问题，不是你的。请在 PR 里说一句。"; fail=1 ;;
             2) echo "::error::上线验收未通过：DEPLOY.md 里没找到合法的上线地址。第一行写成 'URL: https://你的线上地址'（裸地址、公网可达）。"; fail=1 ;;
-            3) echo "::error::探活脚本缺失，这是仓库的问题——请在 PR 里 @ 我们，别改你的提交。"; fail=1 ;;
+            3) echo "::error::探活出错在我们这边（脚本缺失或自身异常），不是你的提交的问题——请在 PR 里说一句，别改你的提交。我们修好后会重开一次你的 PR 让 CI 重跑，这段时间不计入你的 48 小时。"; fail=1 ;;
             *) echo "::error::上线验收未通过：线上地址探不通。这是最后一条验收标准，不通过不进人工走读。修好后推一次 commit 重跑；如果你确认它是活的，在 PR 里说一声，我们可以在 Actions 页点 Re-run。"; fail=1 ;;
           esac
           if [ "$fail" != "0" ]; then exit 1; fi

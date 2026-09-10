@@ -137,6 +137,13 @@ jobs:
           fi
           bash scripts/check-deploy.sh "${DIR}/DEPLOY.md" 300 > deploy.out 2>&1
           rc=$?
+          # 只认脚本自己打的哨兵：bash 对语法错返 2、对 set -u 违例返 1，正好和脚本的
+          # 「地址不合法(2)」「探不通(1)」撞车，光看退出码会把我们改坏脚本伪装成候选人的错。
+          sentinel=$(sed -n 's/^CHECK-DEPLOY-VERDICT: //p' deploy.out | head -1)
+          if [ -z "$sentinel" ] || [ "$sentinel" != "$rc" ]; then
+            echo "::warning::探活脚本没跑到判定就结束了（退出码 ${rc}，哨兵 ${sentinel:-无}）——这是仓库的问题，不是候选人的"
+            rc=3
+          fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           cat deploy.out
           exit 0
@@ -224,9 +231,13 @@ jobs:
           elif drc == "2":
               out += ["", "上线复验：❌ `DEPLOY.md` 缺失或地址不合法 —— **门槛零未过**"]
           elif drc == "3":
-              out += ["", "上线复验：⚠️ 探活脚本缺失，这是仓库的问题，不是候选人的"]
+              out += ["", "上线复验：⚠️ **本次没有验到**——探活脚本缺失或它自己出错，这是仓库的问题，不是候选人的。"
+                          "修好后重新 `/eval`，在此之前别据此下门槛零的结论"]
           elif drc:
-              out += ["", "上线复验：❌ 线上地址此刻探不通 —— **门槛零未过**（评审期间需保持在线）"]
+              out += ["", "上线复验：❌ 线上地址此刻探不通。评审期间需要保持在线——"
+                          "请尽快恢复并在 PR 里说一句，我们会给一个明确的恢复期限；逾期没恢复、或反复掉线，才算门槛零不过"]
+          else:
+              out += ["", "上线复验：⏭️ 这一步没有产出结论（仓库侧问题），本次没有验到"]
           print("\n".join(out))
           PY
           gh pr comment "$PR" --body-file comment.md
